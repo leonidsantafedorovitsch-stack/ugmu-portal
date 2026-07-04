@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;0,800;0,900;1,400;1,700;1,800;1,900&family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400;1,600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 /* ===== BOOK THEME — RESET & BASE ===== */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -2747,7 +2748,7 @@ body {
         <div class="admin-section-title">📋 Журнал действий</div>
         <div id="adminLogContainer">
           <table class="admin-log-table">
-            <thead><tr><th>Время</th><th>Студент</th><th>Действие</th><th>Детали</th></tr></thead>
+            <thead><tr><th>Время</th><th>Студент</th><th>Группа</th><th>Модуль</th><th>Балл</th></tr></thead>
             <tbody id="adminLogBody"></tbody>
           </table>
         </div>
@@ -2767,6 +2768,13 @@ body {
 </div>
 
 <script>
+/* ========================================
+   SUPABASE CLOUD CLIENT
+   ======================================== */
+const supabaseUrl = 'https://rpxcfxbusgsejtkimieg.supabase.co';
+const supabaseKey = 'sb_publishable_1WqH_U183dFaVPhRfOIe2w_5Evtc3dH';
+const supabaseClient = window.supabase ? window.supabase.createClient(supabaseUrl, supabaseKey) : null;
+
 /* ========================================
    NAVIGATION
    ======================================== */
@@ -4974,7 +4982,7 @@ function sendHistoryToConsilium() {
 }
 
 /* ========================================
-   SECRET ADMIN: TELEMETRY SYSTEM
+   SECRET ADMIN: TELEMETRY SYSTEM (Supabase Cloud)
    ======================================== */
 const UGMU_LOG_KEY = 'ugmu_portal_telemetry';
 const UGMU_CASES_KEY = 'ugmu_custom_cases';
@@ -4985,30 +4993,67 @@ function getSessionId() {
   return sid;
 }
 
-function getLogs() {
+function getStudentInfo() {
+  const name = document.getElementById('h-lastname')?.value &&
+               document.getElementById('h-firstname')?.value
+    ? document.getElementById('h-lastname').value + ' ' + document.getElementById('h-firstname').value
+    : 'Анонимный Коллега';
+  const group = document.getElementById('h-workplace')?.value || 'Вне группы';
+  return { student_name: name || 'Анонимный Коллега', group_id: group || 'Вне группы' };
+}
+
+// Local fallback logs (for offline mode)
+function getLocalLogs() {
   try { return JSON.parse(localStorage.getItem(UGMU_LOG_KEY)) || []; }
   catch(e) { return []; }
 }
 
-function saveLogs(logs) {
-  try { localStorage.setItem(UGMU_LOG_KEY, JSON.stringify(logs)); } catch(e) {}
+function saveLocalLogs(logs) {
+  try { localStorage.setItem(UGMU_LOG_KEY, JSON.stringify(logs.slice(-200))); } catch(e) {}
 }
 
-function logAction(action, details) {
-  const logs = getLogs();
-  const studentName = document.getElementById('h-lastname')?.value ||
-                      document.getElementById('h-firstname')?.value || 'Неизвестно';
-  logs.push({
-    ts: new Date().toISOString(),
-    session: getSessionId(),
-    student: studentName,
-    module: currentModuleName || 'unknown',
+// Async log to Supabase + local fallback
+async function logAction(action, details) {
+  const info = getStudentInfo();
+  const entry = {
+    student_name: info.student_name,
+    group_id: info.group_id,
+    module_name: currentModuleName || 'unknown',
+    score: null,
+    errors_count: null,
     action: action,
     details: details || '',
-  });
-  // Keep last 500 entries
-  if (logs.length > 500) logs.splice(0, logs.length - 500);
-  saveLogs(logs);
+    created_at: new Date().toISOString(),
+    session_id: getSessionId(),
+  };
+
+  // Score tracking for specific events
+  if (action === 'simulator_complete' || action === 'consilium_complete') {
+    entry.score = simState?.score || consiliumState?.score || null;
+    entry.errors_count = simState?.errors || null;
+  }
+  if (action === 'ecg_check' || action === 'xray_check') {
+    entry.score = null; // filled by the check functions
+  }
+
+  // Local fallback always
+  const localLogs = getLocalLogs();
+  localLogs.push(entry);
+  saveLocalLogs(localLogs);
+
+  // Supabase write (fire-and-forget)
+  if (supabaseClient) {
+    try {
+      await supabaseClient.from('student_logs').insert({
+        student_name: info.student_name,
+        group_id: info.group_id,
+        module_name: entry.module_name,
+        score: entry.score,
+        errors_count: entry.errors_count,
+        created_at: entry.created_at,
+      });
+    } catch(e) { /* Supabase unavailable — local copy preserved */ }
+  }
 }
 
 // Hook into existing functions
@@ -5026,8 +5071,14 @@ initSimulator = function() {
 
 const _origAskQuestion = askQuestion;
 askQuestion = function(qObj) {
-  logAction('simulator_question', (qObj.isGood ? 'correct_type' : 'incorrect_type') + ': ' + (qObj.id || qObj.category));
+  logAction('simulator_question', (qObj.isGood ? 'correct' : 'incorrect') + ': ' + (qObj.id || qObj.category));
   _origAskQuestion(qObj);
+};
+
+const _origShowFinalResult = showFinalResult;
+showFinalResult = function() {
+  logAction('simulator_complete', 'score: ' + simState.score + ', errors: ' + simState.errors);
+  _origShowFinalResult();
 };
 
 const _origCheckECG = checkECG;
@@ -5070,6 +5121,12 @@ const _origStartConsilium = startConsilium;
 startConsilium = function() {
   logAction('consilium_start', 'questions: ' + CONSILIUM_QUESTIONS.length);
   _origStartConsilium();
+};
+
+const _origShowConsiliumVerdict = showConsiliumVerdict;
+showConsiliumVerdict = function() {
+  logAction('consilium_complete', 'score: ' + consiliumState.score + '/' + CONSILIUM_QUESTIONS.length);
+  _origShowConsiliumVerdict();
 };
 
 const _origAnswerConsilium = answerConsilium;
@@ -5136,34 +5193,78 @@ function closeAdmin() {
   document.getElementById('adminOverlay').classList.remove('visible');
 }
 
-function renderAdminDashboard() {
-  const logs = getLogs();
+let cloudLogsCache = [];
+
+async function renderAdminDashboard() {
+  const statsEl = document.getElementById('adminStats');
+  const tbody = document.getElementById('adminLogBody');
+  statsEl.innerHTML = '<div class="admin-empty">⏳ Загрузка данных из Supabase...</div>';
+  tbody.innerHTML = '<tr><td colspan="4" class="admin-empty">Загрузка...</td></tr>';
+
+  let logs = [];
+
+  // Try Supabase first
+  if (supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('student_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(500);
+
+      if (!error && data) {
+        logs = data;
+      }
+    } catch(e) { /* fallback to local */ }
+  }
+
+  // Fallback to local if Supabase failed or unavailable
+  if (logs.length === 0) {
+    logs = getLocalLogs().map(l => ({
+      student_name: l.student || l.student_name || 'Анонимный',
+      group_id: l.group_id || 'Вне группы',
+      module_name: l.module || l.module_name || 'unknown',
+      score: l.score,
+      errors_count: l.errors_count,
+      created_at: l.ts || l.created_at,
+      action: l.action,
+      details: l.details,
+    }));
+  }
+
+  cloudLogsCache = logs;
 
   // Stats
-  const uniqueSessions = [...new Set(logs.map(l => l.session))].length;
-  const uniqueStudents = [...new Set(logs.map(l => l.student))].length;
+  const uniqueStudents = [...new Set(logs.map(l => l.student_name))].length;
+  const uniqueGroups = [...new Set(logs.map(l => l.group_id))].length;
   const moduleCounts = {};
-  logs.forEach(l => { moduleCounts[l.module] = (moduleCounts[l.module] || 0) + 1; });
+  logs.forEach(l => { moduleCounts[l.module_name] = (moduleCounts[l.module_name] || 0) + 1; });
   const topModule = Object.entries(moduleCounts).sort((a,b) => b[1] - a[1])[0];
+  const avgScore = logs.filter(l => l.score !== null).reduce((s, l) => s + l.score, 0) /
+                   (logs.filter(l => l.score !== null).length || 1);
 
-  document.getElementById('adminStats').innerHTML = `
-    <div class="admin-stat-card"><div class="admin-stat-val">${logs.length}</div><div class="admin-stat-label">Всего действий</div></div>
-    <div class="admin-stat-card"><div class="admin-stat-val">${uniqueSessions}</div><div class="admin-stat-label">Сессий</div></div>
+  const source = supabaseClient ? 'Supabase Cloud' : 'Local Storage';
+
+  statsEl.innerHTML = `
+    <div class="admin-stat-card"><div class="admin-stat-val">${logs.length}</div><div class="admin-stat-label">Всего записей</div></div>
     <div class="admin-stat-card"><div class="admin-stat-val">${uniqueStudents}</div><div class="admin-stat-label">Студентов</div></div>
+    <div class="admin-stat-card"><div class="admin-stat-val">${uniqueGroups}</div><div class="admin-stat-label">Групп</div></div>
+    <div class="admin-stat-card"><div class="admin-stat-val">${Math.round(avgScore)}%</div><div class="admin-stat-label">Средний балл</div></div>
     <div class="admin-stat-card"><div class="admin-stat-val">${topModule ? topModule[0] : '—'}</div><div class="admin-stat-label">Популярный модуль</div></div>
+    <div class="admin-stat-card"><div class="admin-stat-val" style="font-size:14px">${source}</div><div class="admin-stat-label">Источник данных</div></div>
   `;
 
   // Log table
-  const tbody = document.getElementById('adminLogBody');
   if (logs.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="admin-empty">Журнал пуст. Данные начнут записываться при первом действии студента.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="admin-empty">Журнал пуст. Данные начнут записываться при первом действии студента.</td></tr>';
   } else {
-    tbody.innerHTML = logs.slice(-50).reverse().map(l => `
+    tbody.innerHTML = logs.slice(-80).map(l => `
       <tr>
-        <td>${new Date(l.ts).toLocaleString('ru-RU')}</td>
-        <td>${l.student}</td>
-        <td>${l.action}</td>
-        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${l.details}</td>
+        <td>${new Date(l.created_at).toLocaleString('ru-RU')}</td>
+        <td>${l.student_name || '—'}</td>
+        <td>${l.group_id || '—'}</td>
+        <td>${l.module_name}</td>
+        <td>${l.score !== null && l.score !== undefined ? l.score + '%' : '—'}</td>
       </tr>
     `).join('');
   }
@@ -5172,27 +5273,37 @@ function renderAdminDashboard() {
 /* ========================================
    SECRET ADMIN: DATA MANAGEMENT
    ======================================== */
-function exportLogs() {
-  const logs = getLogs();
+async function exportLogs() {
+  const logs = cloudLogsCache.length > 0 ? cloudLogsCache : getLocalLogs();
   if (logs.length === 0) { alert('Журнал пуст — нечего выгружать.'); return; }
   const data = {
     exportDate: new Date().toISOString(),
     university: 'Уральский государственный медицинский университет',
     portal: 'Интерактивный портал молодого медика',
+    source: supabaseClient ? 'Supabase Cloud' : 'Local Storage',
     totalEntries: logs.length,
-    entries: logs,
+    entries: logs.map(l => ({
+      student_name: l.student_name || l.student || '—',
+      group_id: l.group_id || '—',
+      module_name: l.module_name || l.module || '—',
+      score: l.score,
+      errors_count: l.errors_count,
+      action: l.action,
+      details: l.details,
+      created_at: l.created_at || l.ts,
+    })),
   };
   downloadFile(JSON.stringify(data, null, 2), 'ugmu_telemetry_' + Date.now() + '.json', 'application/json');
   logAction('admin_export_json', 'entries: ' + logs.length);
 }
 
-function exportCSV() {
-  const logs = getLogs();
+async function exportCSV() {
+  const logs = cloudLogsCache.length > 0 ? cloudLogsCache : getLocalLogs();
   if (logs.length === 0) { alert('Журнал пуст — нечего выгружать.'); return; }
-  let csv = 'Дата,Время,Сессия,Студент,Модуль,Действие,Детали\n';
+  let csv = 'Дата,Студент,Группа,Модуль,Балл,Ошибки\n';
   logs.forEach(l => {
-    const d = new Date(l.ts);
-    csv += `"${d.toLocaleDateString('ru-RU')}","${d.toLocaleTimeString('ru-RU')}","${l.session}","${l.student}","${l.module}","${l.action}","${l.details}"\n`;
+    const d = new Date(l.created_at || l.ts);
+    csv += `"${d.toLocaleDateString('ru-RU')} ${d.toLocaleTimeString('ru-RU')}","${l.student_name || l.student || '—'}","${l.group_id || '—'}","${l.module_name || l.module || '—'}","${l.score ?? ''}","${l.errors_count ?? ''}"\n`;
   });
   downloadFile('\uFEFF' + csv, 'ugmu_telemetry_' + Date.now() + '.csv', 'text/csv;charset=utf-8');
   logAction('admin_export_csv', 'entries: ' + logs.length);
@@ -5250,13 +5361,24 @@ function importCases(event) {
   event.target.value = '';
 }
 
-function clearLogs() {
-  if (!confirm('Вы уверены? Весь журнал логов будет безвозвратно удалён.')) return;
-  if (!confirm('Подтвердите удаление: все записи действий студентов будут стёрты.')) return;
+async function clearLogs() {
+  if (!confirm('Вы уверены? Весь журнал логов будет безвозвратно удалён из Supabase и локального хранилища.')) return;
+  if (!confirm('Подтвердите удаление: ВСЕ записи действий студентов со ВСЕХ сессий будут стёрты необратимо.')) return;
+
+  // Clear Supabase
+  if (supabaseClient) {
+    try {
+      await supabaseClient.from('student_logs').delete().neq('id', 0);
+    } catch(e) { /* continue with local clear */ }
+  }
+
+  // Clear local
   localStorage.removeItem(UGMU_LOG_KEY);
-  logAction('admin_clear_logs', 'journal cleared');
-  renderAdminDashboard();
-  alert('Журнал логов очищен.');
+  cloudLogsCache = [];
+
+  logAction('admin_clear_logs', 'journal cleared (cloud + local)');
+  await renderAdminDashboard();
+  alert('Журнал логов очищен (Supabase + Local Storage).');
 }
 
 // Load custom cases on startup
