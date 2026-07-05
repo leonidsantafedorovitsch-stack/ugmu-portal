@@ -2008,6 +2008,21 @@ body {
   margin-bottom: 16px; display: none;
 }
 
+.auth-hint {
+  font-size: 11px; color: var(--gray-400); margin-top: 4px; line-height: 1.4;
+}
+.auth-hint.error { color: var(--coral); font-weight: 600; }
+.auth-hint.ok { color: var(--mint); }
+
+.form-input.field-error {
+  border-color: var(--coral) !important;
+  box-shadow: 0 0 0 2px rgba(192,57,43,.15) !important;
+}
+.form-input.field-ok {
+  border-color: var(--mint) !important;
+  box-shadow: 0 0 0 2px rgba(46,204,113,.15) !important;
+}
+
 /* ===== ADMIN PASSWORD MODAL ===== */
 .admin-pw-overlay {
   position: fixed; inset: 0; z-index: 9500;
@@ -2101,11 +2116,13 @@ body {
       <div class="auth-error" id="authError">Заполните все поля для продолжения</div>
       <div class="form-group">
         <label class="form-label">ФИО студента</label>
-        <input type="text" class="form-input" id="authStudentName" placeholder="Например: Иванов Алексей Петрович">
+        <input type="text" class="form-input" id="authStudentName" placeholder="Например: Иванов Алексей Петрович" oninput="validateAuthField('name')">
+        <div class="auth-hint" id="authNameHint">Минимум 2 слова, только буквы, дефисы и пробелы</div>
       </div>
       <div class="form-group">
         <label class="form-label">Номер группы</label>
-        <input type="text" class="form-input" id="authGroupId" placeholder="Например: ЛФ-2201" list="groupList">
+        <input type="text" class="form-input" id="authGroupId" placeholder="Например: ЛФ-2201" list="groupList" oninput="validateAuthField('group')">
+        <div class="auth-hint" id="authGroupHint">Формат: 2-4 буквы + дефис + 4 цифры (ЛФ-2201)</div>
         <datalist id="groupList">
           <option value="ЛФ-2201">
           <option value="ЛФ-2202">
@@ -2931,29 +2948,100 @@ function hideStudentAuth() {
   document.getElementById('authOverlay').classList.add('hidden');
 }
 
+function validateAuthField(field) {
+  const nameEl = document.getElementById('authStudentName');
+  const groupEl = document.getElementById('authGroupId');
+  const nameHint = document.getElementById('authNameHint');
+  const groupHint = document.getElementById('authGroupHint');
+
+  if (field === 'name' || !field) {
+    const v = nameEl.value.trim();
+    nameEl.classList.remove('field-error', 'field-ok');
+    nameHint.classList.remove('error', 'ok');
+    if (v.length === 0) {
+      nameHint.textContent = 'Минимум 2 слова, только буквы, дефисы и пробелы';
+    } else if (v.split(/\s+/).filter(w => w.length > 0).length < 2) {
+      nameEl.classList.add('field-error');
+      nameHint.textContent = 'Введите фамилию и имя (минимум 2 слова)';
+      nameHint.classList.add('error');
+    } else if (!/^[a-zA-Zа-яА-ЯёЁ\s\-]+$/.test(v)) {
+      nameEl.classList.add('field-error');
+      nameHint.textContent = 'Допустимы только буквы, пробелы и дефисы';
+      nameHint.classList.add('error');
+    } else {
+      nameEl.classList.add('field-ok');
+      nameHint.textContent = '✓ Корректно';
+      nameHint.classList.add('ok');
+    }
+  }
+
+  if (field === 'group' || !field) {
+    const v = groupEl.value.trim();
+    groupEl.classList.remove('field-error', 'field-ok');
+    groupHint.classList.remove('error', 'ok');
+    if (v.length === 0) {
+      groupHint.textContent = 'Формат: 2-4 буквы + дефис + 4 цифры (ЛФ-2201)';
+    } else if (!/^[a-zA-Zа-яА-ЯёЁ]{2,4}-\d{4}$/.test(v)) {
+      groupEl.classList.add('field-error');
+      groupHint.textContent = 'Неверный формат. Пример: ЛФ-2201, ПФ-2302, Стом-2401';
+      groupHint.classList.add('error');
+    } else {
+      groupEl.classList.add('field-ok');
+      groupHint.textContent = '✓ Корректно';
+      groupHint.classList.add('ok');
+    }
+  }
+}
+
 function submitStudentAuth() {
-  const name = document.getElementById('authStudentName').value.trim();
-  const group = document.getElementById('authGroupId').value.trim();
+  const nameEl = document.getElementById('authStudentName');
+  const groupEl = document.getElementById('authGroupId');
+  const name = nameEl.value.trim();
+  const group = groupEl.value.trim();
   const errEl = document.getElementById('authError');
+
+  // Run validation on both fields
+  validateAuthField('name');
+  validateAuthField('group');
 
   if (!name || !group) {
     errEl.textContent = 'Заполните все поля для продолжения';
     errEl.style.display = 'block';
-    return;
-  }
-  if (name.length < 3) {
-    errEl.textContent = 'Введите корректное ФИО (не менее 3 символов)';
-    errEl.style.display = 'block';
+    if (!name) nameEl.classList.add('field-error');
+    if (!group) groupEl.classList.add('field-error');
     return;
   }
 
+  // Name: min 2 words, letters only
+  const nameWords = name.split(/\s+/).filter(w => w.length > 0);
+  if (nameWords.length < 2) {
+    errEl.textContent = 'Введите фамилию и имя (минимум 2 слова)';
+    errEl.style.display = 'block';
+    nameEl.classList.add('field-error');
+    return;
+  }
+  if (!/^[a-zA-Zа-яА-ЯёЁ\s\-]+$/.test(name)) {
+    errEl.textContent = 'ФИО содержит недопустимые символы. Допустимы только буквы, пробелы и дефисы';
+    errEl.style.display = 'block';
+    nameEl.classList.add('field-error');
+    return;
+  }
+
+  // Group: XX-NNNN format
+  if (!/^[a-zA-Zа-яА-ЯёЁ]{2,4}-\d{4}$/.test(group)) {
+    errEl.textContent = 'Неверный формат группы. Пример: ЛФ-2201, ПФ-2302, Стом-2401';
+    errEl.style.display = 'block';
+    groupEl.classList.add('field-error');
+    return;
+  }
+
+  errEl.style.display = 'none';
   localStorage.setItem(UGMU_AUTH_KEY, JSON.stringify({
     student_name: name,
     group_id: group,
     created_at: new Date().toISOString()
   }));
 
-  errEl.style.display = 'none';
   hideStudentAuth();
   initSimulator();
 }
@@ -7156,7 +7244,7 @@ async function logAction(action, details) {
   // Supabase write (fire-and-forget)
   if (supabaseClient) {
     try {
-      await supabaseClient.from('student_logs').insert({
+      await supabaseClient.from('Student_Logs').insert({
         student_name: info.student_name,
         group_id: info.group_id,
         module_name: entry.module_name,
@@ -7333,7 +7421,7 @@ async function renderAdminDashboard() {
   if (supabaseClient) {
     try {
       const { data, error } = await supabaseClient
-        .from('student_logs')
+        .from('Student_Logs')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(500);
@@ -7494,7 +7582,7 @@ async function clearLogs() {
   // Clear Supabase
   if (supabaseClient) {
     try {
-      await supabaseClient.from('student_logs').delete().neq('id', 0);
+      await supabaseClient.from('Student_Logs').delete().neq('id', 0);
     } catch(e) { /* continue with local clear */ }
   }
 
