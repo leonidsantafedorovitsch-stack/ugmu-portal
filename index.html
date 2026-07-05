@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Интерактивный портал молодого медика УГМУ</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -3145,13 +3148,20 @@ function playPageTurn() {
 
 // === SPLASH SCREEN ===
 function enterBook() {
+  console.log('[PORTAL] enterBook called');
   playPageTurn();
   const splash = document.getElementById('splashScreen');
+  console.log('[PORTAL] splash element:', splash);
   splash.classList.add('hidden');
   setTimeout(() => {
     splash.style.display = 'none';
-    if (!isStudentAuthorized()) {
+    const authed = isStudentAuthorized();
+    console.log('[PORTAL] isStudentAuthorized:', authed);
+    if (!authed) {
+      console.log('[PORTAL] showing auth overlay');
       showStudentAuth();
+    } else {
+      console.log('[PORTAL] already authorized, skipping auth');
     }
   }, 800);
 }
